@@ -1,6 +1,6 @@
 # Debian Firefox VNC Container
 
-This project provides a simple, multi-platform Docker container running Debian with Firefox, accessible via VNC. It's designed to be lightweight and easily configurable, allowing you to dynamically add custom host entries at runtime without rebuilding the image.
+This project provides a simple Docker container running Debian with Firefox, accessible via VNC. It's designed to be lightweight and easily configurable, allowing you to dynamically add custom host entries at runtime without rebuilding the image.
 
 This setup is ideal for web testing, sandboxed browsing, or accessing internal websites that require specific DNS resolutions.
 
