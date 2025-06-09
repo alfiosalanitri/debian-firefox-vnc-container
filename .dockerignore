@@ -1,0 +1,19 @@
+# .dockerignore
+
+# Git related
+.git
+.gitignore
+
+# GitHub Actions workflows
+.github
+
+# Documentation and license files
+README.md
+LICENSE
+
+# Local configuration files that should not be in the image
+my-hosts
+my-hosts.example
+
+# This file itself
+.dockerignore
