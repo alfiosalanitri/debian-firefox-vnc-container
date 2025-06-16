@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     x11vnc \
     xvfb \
+    xterm \
     libgtk-3-0 \
     libdbus-glib-1-2 \
     libasound2 \
@@ -20,6 +21,8 @@ RUN apt-get update && apt-get install -y \
     menu \
     libpci3 \
     libegl1 \
+    && update-alternatives --install /usr/bin/x-terminal-emulator x-terminal-emulator /usr/bin/xterm 100 \
+    && update-alternatives --install /usr/bin/x-www-browser x-www-browser /usr/bin/firefox 100 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 RUN curl -L -o /tmp/firefox.tar.bz2 "https://ftp.mozilla.org/pub/firefox/releases/126.0/linux-x86_64/en-US/firefox-126.0.tar.bz2" && \
