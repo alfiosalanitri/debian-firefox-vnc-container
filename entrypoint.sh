@@ -42,7 +42,7 @@ sleep 2 # Give Xvfb time to start
 openbox &
 
 # Start Firefox
-firefox &
+firefox --no-sandbox &
 
 # Start the VNC server and make it the main process
 # The 'exec' command replaces the current shell process with x11vnc,
