@@ -25,6 +25,7 @@
     "EnableTrackingProtection": { "Value": true, "Cryptomining": true, "Fingerprinting": true },
     "PopupBlocking": { "Default": true },
     "PromptForDownloadLocation": false,
+    "DefaultDownloadDirectory": "/home/browser/Downloads",
 
     "Preferences": {
       "browser.safebrowsing.malware.enabled": { "Value": true, "Status": "locked" },

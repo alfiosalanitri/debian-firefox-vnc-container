@@ -1,0 +1,226 @@
+#!/bin/bash
+# Static analysis of the files downloaded in the sandboxed browser.
+#
+#   analyze list                 list the downloaded files
+#   analyze scan [FILE...]       ClamAV scan (all downloads by default)
+#   analyze inspect [FILE...]    full report (all downloads by default)
+#   analyze update               update the ClamAV signatures (needs network)
+#
+# Nothing is ever executed or rendered: files are only parsed by command line
+# tools. All the output goes through `sanitize`, because file names, metadata
+# and contents are attacker-controlled and could carry terminal escape
+# sequences aimed at the terminal on the host.
+set -uo pipefail
+
+DOWNLOADS=/downloads
+DB=/var/lib/clamav
+PREVIEW_LINES=${PREVIEW_LINES:-60}
+MAX_DEPTH=2
+
+# Replace control characters (ESC, C0 except tab/newline, DEL, UTF-8 encoded C1)
+sanitize() {
+    LC_ALL=C perl -pe 's/[\x00-\x08\x0B-\x1F\x7F]/?/g; s/\xC2[\x80-\x9F]/??/g'
+}
+
+section() { printf '\n== %s\n' "$*"; }
+sub() { printf '\n-- %s\n' "$*"; }
+preview() { head -n "$PREVIEW_LINES"; }
+
+have_db() { compgen -G "$DB/*.c[lv]d" >/dev/null; }
+
+db_status() {
+    if have_db; then
+        echo "ClamAV signatures: $(clamscan --version)"
+    else
+        echo "ClamAV signatures missing: run 'make av-update' first."
+    fi
+}
+
+clam() {
+    have_db || { echo "(skipped: no ClamAV signatures, run 'make av-update')"; return; }
+    clamscan --stdout --recursive \
+        --alert-macros=yes --alert-encrypted=yes --alert-exceeds-max=yes \
+        --max-filesize=200M --max-scansize=400M "$@"
+}
+
+# Loading the signatures takes seconds: `inspect` scans everything once and
+# keeps the verdicts here, one "path: result" line per file.
+CLAM_RESULTS=
+clam_batch() {
+    have_db || return
+    clam --no-summary "$@" 2>/dev/null | grep -aE '^/.*: ' >>"$CLAM_RESULTS"
+}
+clam_verdict() {
+    have_db || { echo "(skipped: no ClamAV signatures, run 'make av-update')"; return; }
+    local line
+    line=$(grep -aF -- "$1: " "$CLAM_RESULTS" | tail -n 1)
+    echo "${line#"$1: "}"
+}
+
+# Files to work on: the arguments, or every regular file in the downloads
+targets() {
+    if [ $# -gt 0 ]; then
+        printf '%s\0' "$@"
+    else
+        find "$DOWNLOADS" -type f -print0 | sort -z
+    fi
+}
+
+urls() {
+    strings -n 8 "$1" | grep -aEo '(https?|ftp)://[^][ "'"'"'<>(){}\\]+' | sort -u | preview
+}
+
+inspect_pdf() {
+    sub "PDF info"
+    pdfinfo "$1" 2>&1 | preview
+    # Decompress object streams first, so that keywords hidden in compressed
+    # streams are counted too (qpdf also normalizes #xx-escaped names).
+    local qdf="$TMP/qdf.pdf"
+    qpdf --qdf --object-streams=disable --decrypt "$1" "$qdf" >/dev/null 2>&1 || cp "$1" "$qdf"
+    sub "Risky PDF keywords (count)"
+    local k n
+    for k in /JavaScript /JS /OpenAction /AA /Launch /EmbeddedFile /RichMedia /SubmitForm /ImportData /XFA /URI /ObjStm /Encrypt; do
+        n=$(grep -ac -- "$k\b" "$qdf")
+        printf '  %-14s %s\n' "$k" "$n"
+    done
+    sub "Link targets (/URI)"
+    grep -aoE '/URI *\([^)]*\)' "$qdf" | sort -u | preview
+    sub "Text (first $PREVIEW_LINES lines)"
+    pdftotext -l 5 -layout "$1" - 2>/dev/null | grep -v '^\s*$' | preview
+}
+
+inspect_office() {
+    sub "oleid"
+    oleid "$1" 2>&1 | tail -n +5 | preview
+    sub "Macros (olevba)"
+    olevba --decode "$1" 2>&1 | tail -n +4 | head -n 200
+    sub "DDE links (msodde)"
+    msodde "$1" 2>&1 | tail -n +8 | preview
+    if unzip -tq "$1" >/dev/null 2>&1; then
+        sub "External relationships (remote templates, OLE links)"
+        unzip -p "$1" '*.rels' 2>/dev/null | grep -aoE 'Target="[^"]*"[^>]*TargetMode="External"' | sort -u | preview
+        sub "Embedded objects (oleobj)"
+        oleobj "$1" 2>&1 | grep -aiE 'embedded|found|link|url|http' | preview
+    fi
+}
+
+inspect_text() {
+    sub "Suspicious constructs"
+    grep -aniE '<script|eval\(|atob\(|unescape\(|fromCharCode|document\.write|window\.location|location\.(href|replace)|<form|action=|<iframe|<meta[^>]+refresh|base64,|ActiveXObject|WScript|powershell|cmd(\.exe)? /c' "$1" \
+        | cut -c1-200 | preview
+    sub "Content (first $PREVIEW_LINES lines, long lines cut)"
+    cut -c1-200 "$1" | preview
+}
+
+inspect_eml() {
+    local depth=$2 label=$3 parts
+    parts=$(mktemp -d "$TMP/parts.XXXX")
+    python3 /usr/local/lib/analyzer/eml.py --extract "$parts" "$1"
+    if [ "$depth" -lt "$MAX_DEPTH" ] && compgen -G "$parts/*" >/dev/null; then
+        clam_batch "$parts"
+        local p
+        for p in "$parts"/*; do
+            inspect_file "$p" $((depth + 1)) "$label > attachment ${p##*/}"
+        done
+    fi
+}
+
+inspect_file() {
+    local f=$1 depth=${2:-0} label=${3:-${1#"$DOWNLOADS"/}} mime desc
+    mime=$(file -b --mime-type "$f")
+    desc=$(file -b "$f")
+    section "$label"
+    echo "Size:    $(stat -c %s "$f") bytes"
+    echo "Type:    $desc"
+    echo "MIME:    $mime"
+    echo "MD5:     $(md5sum "$f" | cut -d' ' -f1)"
+    local sha
+    sha=$(sha256sum "$f" | cut -d' ' -f1)
+    echo "SHA256:  $sha"
+    echo "Lookup:  https://www.virustotal.com/gui/file/$sha  (hash search, the file is not uploaded)"
+
+    echo "ClamAV:  $(clam_verdict "$f")"
+
+    sub "Metadata (exiftool)"
+    exiftool -S -G1 -x 'System:all' -x 'ExifTool:all' "$f" 2>&1 | preview
+
+    case "$mime:$f" in
+        application/pdf:*)
+            inspect_pdf "$f" ;;
+        message/rfc822:* | *:*.eml | *:*.EML)
+            inspect_eml "$f" "$depth" "$label"; return ;;
+        *:*.msg | *:*.MSG)
+            local eml="$TMP/msg.$RANDOM.eml"
+            (cd "$TMP" && msgconvert --outfile "$eml" "$f") 2>&1
+            [ -f "$eml" ] && inspect_eml "$eml" "$depth" "$label"; return ;;
+        application/msword:* | application/vnd.ms-*:* | application/vnd.openxmlformats*:* | \
+        application/x-ole-storage:* | application/CDFV2*:* | application/encrypted:*)
+            inspect_office "$f" ;;
+        text/rtf:*)
+            sub "Embedded objects (rtfobj)"; rtfobj "$f" 2>&1 | tail -n +6 | preview ;;
+        application/zip:* | application/x-7z-compressed:* | application/x-rar*:* | application/vnd.rar:* | \
+        application/gzip:* | application/x-tar:* | application/x-iso9660-image:* | application/vnd.ms-cab-compressed:* | \
+        application/x-xz:* | application/x-bzip2:* | application/java-archive:*)
+            sub "Archive content (listed, not extracted)"
+            # -pX: never prompt for a password on encrypted archives
+            7z l -pX -ba "$f" 2>&1 | preview ;;
+        text/* | image/svg+xml:* | application/javascript:* | application/json:* | application/x-shellscript:*)
+            inspect_text "$f" ;;
+        *)
+            sub "Printable strings (first $PREVIEW_LINES)"
+            strings -n 6 "$f" | preview ;;
+    esac
+
+    sub "URLs found in the raw bytes"
+    urls "$f"
+}
+
+cmd_list() {
+    [ -n "$(find "$DOWNLOADS" -type f -print -quit)" ] || { echo "No downloads (is the browser running?)"; return; }
+    find "$DOWNLOADS" -type f -printf '%TY-%Tm-%Td %TH:%TM  %10s  %P\n' | sort
+}
+
+cmd_scan() {
+    db_status
+    echo
+    local files=()
+    mapfile -d '' files < <(targets "$@")
+    [ ${#files[@]} -gt 0 ] || { echo "No downloads (is the browser running?)"; return; }
+    clam "${files[@]}" | sed "s|^$DOWNLOADS/||"
+}
+
+cmd_inspect() {
+    db_status
+    local files=() f
+    mapfile -d '' files < <(targets "$@")
+    [ ${#files[@]} -gt 0 ] || { echo "No downloads (is the browser running?)"; return; }
+    local found=()
+    for f in "${files[@]}"; do
+        if [ -f "$f" ]; then found+=("$(realpath "$f")"); else echo "Not found: $f"; fi
+    done
+    [ ${#found[@]} -gt 0 ] || return
+    CLAM_RESULTS="$TMP/clam.txt"
+    : >"$CLAM_RESULTS"
+    clam_batch "${found[@]}"
+    for f in "${found[@]}"; do
+        inspect_file "$f"
+    done
+}
+
+usage() {
+    sed -n '2,8s/^# \{0,1\}//p' "$0"
+}
+
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+
+cmd=${1:-help}
+shift || true
+case "$cmd" in
+    list)    cmd_list "$@" 2>&1 | sanitize ;;
+    scan)    cmd_scan "$@" 2>&1 | sanitize ;;
+    inspect) cmd_inspect "$@" 2>&1 | sanitize ;;
+    update)  freshclam --stdout 2>&1 | sanitize ;;
+    help | -h | --help) usage ;;
+    *)       exec "$cmd" "$@" ;;
+esac

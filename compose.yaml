@@ -59,6 +59,10 @@ services:
     tmpfs:
       - /tmp:mode=1777,size=512m
       - /home/browser:uid=1000,gid=1000,mode=0700,size=1g
+    # Firefox's download folder: a RAM-backed volume shared (read-only) with
+    # the offline analyzer. Like the rest of the home, it vanishes on `down`.
+    volumes:
+      - downloads:/home/browser/Downloads
     # Resource limits: a malicious page cannot starve the host.
     mem_limit: ${MEM_LIMIT:-4g}
     cpus: ${CPUS:-2}
@@ -88,6 +92,65 @@ services:
     mem_limit: 256m
     cpus: 1
     pids_limit: 256
+
+  # Offline static analysis of the downloads (ClamAV, oletools, exiftool,
+  # poppler, 7z...). Started on demand: `make scan`, `make inspect`.
+  # No network at all, downloads mounted read-only, unprivileged, read-only
+  # root: a parser exploited by a malicious file has nothing to reach.
+  analyzer:
+    build:
+      context: ./analyzer
+    image: ${ANALYZER_IMAGE:-debian-browser-analyzer}
+    profiles: [tools]
+    network_mode: none
+    volumes:
+      - downloads:/downloads:ro
+      - clamav-db:/var/lib/clamav:ro
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=1g,noexec,nosuid,nodev
+      - /home/analyst:uid=1000,gid=1000,mode=0700,size=64m,noexec,nosuid,nodev
+    # clamscan loads the whole signature database in RAM (~1.5 GB)
+    mem_limit: 3g
+    cpus: 2
+    pids_limit: 256
+
+  # Updates the ClamAV signatures (`make av-update`). It has Internet access
+  # but never sees the downloads.
+  av-update:
+    image: ${ANALYZER_IMAGE:-debian-browser-analyzer}
+    profiles: [tools]
+    command: ["update"]
+    networks:
+      - egress
+    volumes:
+      - clamav-db:/var/lib/clamav
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=64m,noexec,nosuid,nodev
+    mem_limit: 1g
+    cpus: 1
+    pids_limit: 64
+
+volumes:
+  # tmpfs: downloads never touch the host disk and are gone when no container
+  # uses the volume anymore. noexec also applies inside the browser.
+  downloads:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "size=1g,uid=1000,gid=1000,mode=0700,noexec,nosuid,nodev"
+  # ClamAV signatures, kept between runs (~300 MB)
+  clamav-db: {}
 
 networks:
   # No route outside: the browser can only talk to the gateway
