@@ -2,27 +2,40 @@
 
 # Read custom host entries from the CUSTOM_HOSTS environment variable
 
+# Returns 0 if /etc/hosts already maps every given hostname to the given IP.
+# Exact field comparison (no regex), so dots in IPs/hostnames are literal.
+hosts_entry_exists() {
+    local ip="$1"
+    shift
+    awk -v ip="$ip" -v wanted="$*" '
+        BEGIN { n = split(wanted, w, " ") }
+        { sub(/#.*/, "") }
+        $1 == ip { for (i = 2; i <= NF; i++) seen[$i] = 1 }
+        END { for (j = 1; j <= n; j++) if (!(w[j] in seen)) exit 1 }
+    ' /etc/hosts
+}
+
 if [ -n "$CUSTOM_HOSTS" ]; then
     echo "Processing custom host entries..."
-    # Use a "here string" to read from the variable line by line
     while IFS= read -r line || [ -n "$line" ]; do
-        # Clean up leading/trailing spaces and multiple spaces
-        trimmed="$(echo "$line" | tr -s '[:space:]' ' ' | sed 's/^ *//')"
-        
-        # Skip empty lines or comments
-        [ -z "$trimmed" ] && continue
-        [[ "$trimmed" == \#* ]] && continue
+        # Drop comments (whole-line or trailing) and split on any whitespace
+        line="${line%%#*}"
+        read -r -a fields <<< "$line"
 
-        # Extract IP and hosts
-        ip=$(echo "$trimmed" | cut -d' ' -f1)
-        hosts=$(echo "$trimmed" | cut -d' ' -f2-)
+        # Skip empty lines
+        [ ${#fields[@]} -eq 0 ] && continue
 
-        # Check if the line already effectively exists
-        if ! grep -qE "^\s*$ip\s+.*\b$hosts\b" /etc/hosts; then
-            echo "$trimmed" >> /etc/hosts
-            echo "✅ Added: $trimmed"
+        if [ ${#fields[@]} -lt 2 ]; then
+            echo "❌ Invalid entry (missing hostname): ${fields[*]}"
+            continue
+        fi
+
+        entry="${fields[*]}"
+        if hosts_entry_exists "${fields[@]}"; then
+            echo "⚠️  Already present: $entry"
         else
-            echo "⚠️  Already present: $trimmed"
+            echo "$entry" >> /etc/hosts
+            echo "✅ Added: $entry"
         fi
     done <<< "$CUSTOM_HOSTS"
 else
@@ -36,7 +49,21 @@ echo "--------------------------"
 
 # Start the virtual framebuffer on display :1
 Xvfb :1 -screen 0 1440x900x16 &
-sleep 2 # Give Xvfb time to start
+xvfb_pid=$!
+
+# Wait until Xvfb has created its socket (up to 10 seconds)
+for _ in $(seq 1 50); do
+    [ -S /tmp/.X11-unix/X1 ] && break
+    if ! kill -0 "$xvfb_pid" 2>/dev/null; then
+        echo "❌ Xvfb exited unexpectedly" >&2
+        exit 1
+    fi
+    sleep 0.2
+done
+if [ ! -S /tmp/.X11-unix/X1 ]; then
+    echo "❌ Xvfb did not start within 10 seconds" >&2
+    exit 1
+fi
 
 # Start the window manager
 openbox &

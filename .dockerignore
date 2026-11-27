@@ -17,3 +17,8 @@ my-hosts.example
 
 # This file itself
 .dockerignore
+
+# Local tooling
+Makefile
+compose.yaml
+CLAUDE.md

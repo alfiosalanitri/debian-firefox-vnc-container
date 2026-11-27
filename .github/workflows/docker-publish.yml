@@ -39,6 +39,13 @@ jobs:
             # Create version tag for git tags (e.g., v1.2.3 -> 1.2.3)
             type=semver,pattern={{version}}
 
+      - name: Resolve latest Firefox version
+        id: firefox
+        run: |
+          version=$(curl -fsSL https://product-details.mozilla.org/1.0/firefox_versions.json | jq -r .LATEST_FIREFOX_VERSION)
+          echo "Latest Firefox: $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
@@ -46,5 +53,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            FIREFOX_VERSION=${{ steps.firefox.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

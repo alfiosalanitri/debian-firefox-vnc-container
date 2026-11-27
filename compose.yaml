@@ -1,0 +1,25 @@
+# Debian + Firefox accessibile via VNC.
+#
+# Le voci custom di /etc/hosts arrivano dalla variabile CUSTOM_HOSTS (multilinea).
+# Compose non sa leggere un file dentro una variabile: usa `make up`, che la
+# popola dal file `my-hosts`, oppure:
+#   CUSTOM_HOSTS="$(cat my-hosts)" docker compose up -d
+#
+# ATTENZIONE: il VNC è senza password. Di default la porta è esposta solo su
+# 127.0.0.1; imposta VNC_BIND=0.0.0.0 solo su reti fidate.
+
+services:
+  browser:
+    build:
+      context: .
+      args:
+        # "latest" o una versione esatta (es. 161.0). `make build` la risolve da sola.
+        FIREFOX_VERSION: ${FIREFOX_VERSION:-latest}
+    image: ${IMAGE:-debian-browser-app}
+    container_name: ${CONTAINER_NAME:-debian-browser}
+    shm_size: "2gb"
+    ports:
+      - "${VNC_BIND:-127.0.0.1}:${VNC_PORT:-6000}:5900"
+    environment:
+      CUSTOM_HOSTS: ${CUSTOM_HOSTS:-}
+    restart: "no"
