@@ -2,7 +2,7 @@
 
 This project provides a simple Docker container running Debian with Firefox, accessible via VNC. It's designed to be lightweight and easily configurable, allowing you to dynamically add custom host entries at runtime without rebuilding the image.
 
-This setup is ideal for web testing, sandboxed browsing, or accessing internal websites that require specific DNS resolutions.
+This setup is ideal for **safely opening suspicious links (e.g. from phishing emails)** to inspect their content without putting your machine at risk, as well as for web testing and accessing internal websites that require specific DNS resolutions.
 
 ## Features
 
@@ -10,6 +10,9 @@ This setup is ideal for web testing, sandboxed browsing, or accessing internal w
 -   **Firefox**: The latest Firefox release is installed at build time (or a pinned version via the `FIREFOX_VERSION` build argument).
 -   **VNC Access**: A built-in VNC server (`x11vnc`) provides remote GUI access.
 -   **Passwordless**: VNC connection is passwordless for ease of use in trusted environments.
+-   **Hardened sandbox**: unprivileged user, no Linux capabilities, read-only filesystem, ephemeral in-memory profile, resource limits (see [Security](#security)).
+-   **Network isolation**: the browser can reach the public Internet only through a filtering proxy that blocks your host, LAN and VPNs; every contacted host is logged.
+-   **Hardened Firefox**: enterprise policies disable password/form saving and extension installs, and lock Safe Browsing on.
 -   **Dynamic Host Entries**: Easily modify the container's `/etc/hosts` file on startup.
 -   **Docker Compose + Makefile**: One-command build, run and management.
 -   **GitHub Package**: Automatically builds and publishes to the GitHub Container Registry via GitHub Actions.
@@ -26,7 +29,9 @@ This setup is ideal for web testing, sandboxed browsing, or accessing internal w
 
 -   `.github/workflows/docker-publish.yml`: GitHub Actions workflow to publish the image.
 -   `Dockerfile`: Defines the Docker image (linux/amd64).
--   `compose.yaml`: Docker Compose service definition.
+-   `compose.yaml`: Docker Compose services (`browser` + `gateway`) and networks.
+-   `gateway/`: egress proxy (squid) + VNC relay image used by Compose.
+-   `firefox/policies.json`: Firefox enterprise policies baked into the image.
 -   `Makefile`: Shortcuts for building, running and managing the container (`make help`).
 -   `CLAUDE.md`: Project context for AI coding assistants.
 -   `entrypoint.sh`: The main script that runs inside the container.
@@ -65,9 +70,10 @@ Other useful targets (run `make help` for the full list):
 
 | Command | Description |
 |---|---|
-| `make up-ghcr` | Run the published GHCR image instead of building locally |
-| `make logs` | Follow the container logs |
-| `make shell` | Open a bash shell inside the container |
+| `make up-ghcr` | Run the published GHCR browser image (the small gateway image is built locally) |
+| `make logs` | Follow the logs of browser and gateway |
+| `make proxy-logs` | Follow only the outgoing traffic (every host the page contacts) |
+| `make shell` | Open a bash shell inside the container (unprivileged user; `make shell-root` for root) |
 | `make hosts-check` | Print `/etc/hosts` inside the container |
 | `make firefox-version` | Print the Firefox version inside the container |
 | `make restart` | Recreate the container (re-reads `my-hosts`) |
@@ -175,6 +181,48 @@ docker run -d --rm \
     docker stop debian-browser
     ```
     Since the container was started with the `--rm` flag, it will be automatically removed when you stop it.
+
+## Security
+
+This container is meant for opening untrusted links (e.g. from phishing emails). With `make up` / `docker compose` it runs with:
+
+-   **Unprivileged user**: the entrypoint uses root only to edit `/etc/hosts`, then drops to user `browser` (uid 1000). Xvfb, openbox, Firefox and x11vnc never run as root.
+-   **No capabilities**: `cap_drop: ALL` (only `SETUID`/`SETGID` are kept for the privilege drop; the browser processes end up with an empty capability set) and `no-new-privileges`, so setuid binaries cannot regain privileges.
+-   **Read-only filesystem**: the image cannot be modified. `/tmp` and `/home/browser` are in-memory `tmpfs` mounted `noexec`: downloaded files cannot be executed and everything (profile, cookies, history, downloads) is discarded when the container stops.
+-   **Resource limits**: memory (`MEM_LIMIT`, default 4g), CPU (`CPUS`, default 2) and process count (`PIDS_LIMIT`, default 1024).
+-   **Default seccomp profile** and Firefox's own seccomp sandbox are active; nothing from the host is mounted.
+
+### Network isolation
+
+```
+host ──VNC 127.0.0.1:6000──▶ gateway ──▶ browser:5900
+browser ──http(s)──▶ gateway:3128 (squid) ──▶ public Internet
+                               ✗ host, Docker networks, LAN, VPN (Tailscale), cloud metadata
+```
+
+-   The `browser` container is attached only to an `internal` Docker network: it has **no route** to the outside world and no DNS for external names.
+-   Its only way out is the squid proxy in the `gateway` container, which **denies every private, loopback, link-local and CGNAT destination** (`10/8`, `172.16/12`, `192.168/16`, `100.64/10`, `127/8`, `169.254/16`, `fc00::/7`, …). The check is done on the resolved IP, so public hostnames pointing to private addresses (DNS rebinding) are blocked too.
+-   IPs listed in `my-hosts` are considered trusted and stay reachable even if private.
+-   WebRTC is disabled and the proxy setting is locked in Firefox; even if a page bypassed it, the internal network has no way out.
+-   `make proxy-logs` shows every request (for HTTPS, the `host:port` of each `CONNECT`): useful to see redirect chains and where a phishing form sends data.
+-   The gateway runs as an unprivileged user with no capabilities and a read-only filesystem.
+
+### Firefox policies
+
+`firefox/policies.json` disables the password manager, autofill and form history (credentials typed by mistake are never stored), blocks extension installs, turns off telemetry, update checks, DNS-over-HTTPS and PDF scripting, and locks Safe Browsing (phishing/malware/downloads) on. Check them in Firefox at `about:policies`.
+
+### Recommended workflow for phishing links
+
+1.  `make up`, connect with VNC, paste the link (the clipboard is shared through VNC).
+2.  Inspect the page; watch `make proxy-logs` to see which hosts it contacts. **Never type real credentials.**
+3.  `make restart` (or `make down`) after each analysis: profile, cookies, history and downloads live only in RAM and are discarded.
+
+### Limitations
+
+-   Containers share the host kernel: a Firefox exploit chained with a kernel exploit could still escape. For the strongest isolation run Docker inside a VM (or use a stronger runtime such as gVisor).
+-   The visited sites see your public IP address (the proxy only hides that a proxy is used). Use a VPN on the host if you do not want phishers to see it.
+-   VNC is unencrypted and passwordless: keep it bound to `127.0.0.1`.
+-   The plain `docker run` commands above also drop to the unprivileged user and apply the Firefox policies, but **without network isolation** and the other Compose protections. Use `make up` / Docker Compose for untrusted links.
 
 ## License
 

@@ -19,6 +19,7 @@ my-hosts.example
 .dockerignore
 
 # Local tooling
+gateway/
 Makefile
 compose.yaml
 CLAUDE.md

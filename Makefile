@@ -23,7 +23,7 @@ export IMAGE CONTAINER_NAME VNC_PORT VNC_BIND
 COMPOSE = CUSTOM_HOSTS="$$(cat $(HOSTS_FILE) 2>/dev/null)" docker compose
 
 .DEFAULT_GOAL := help
-.PHONY: help hosts build rebuild up up-ghcr down restart logs ps shell hosts-check firefox-version vnc clean
+.PHONY: help hosts build rebuild up up-ghcr down restart logs proxy-logs ps shell shell-root hosts-check firefox-version vnc clean
 
 help: ## Mostra questo aiuto
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
@@ -44,23 +44,30 @@ up: ## Avvia il container (build se necessario) con le voci di my-hosts
 	FIREFOX_VERSION=$(FF_VERSION) $(COMPOSE) up -d --build
 	@echo "VNC disponibile su $(VNC_BIND):$(VNC_PORT) (senza password)"
 
-up-ghcr: ## Avvia usando l'immagine pubblicata su GHCR invece della build locale
-	IMAGE=$(GHCR_IMAGE) $(COMPOSE) pull
-	IMAGE=$(GHCR_IMAGE) $(COMPOSE) up -d --no-build
+up-ghcr: ## Avvia usando l'immagine del browser pubblicata su GHCR (il gateway è buildato in locale)
+	IMAGE=$(GHCR_IMAGE) $(COMPOSE) pull browser
+	IMAGE=$(GHCR_IMAGE) $(COMPOSE) build gateway
+	IMAGE=$(GHCR_IMAGE) $(COMPOSE) up -d
 	@echo "VNC disponibile su $(VNC_BIND):$(VNC_PORT) (senza password)"
 
-down: ## Ferma e rimuove il container
+down: ## Ferma e rimuove i container
 	$(COMPOSE) down
 
 restart: down up ## Riavvia il container (rilegge my-hosts)
 
-logs: ## Segue i log del container
+logs: ## Segue i log di browser e gateway
 	$(COMPOSE) logs -f
+
+proxy-logs: ## Segue solo il traffico in uscita (host contattati dalla pagina)
+	$(COMPOSE) logs -f --no-log-prefix gateway
 
 ps: ## Stato del container
 	$(COMPOSE) ps
 
-shell: ## Apre una shell bash nel container
+shell: ## Apre una shell nel container come utente non privilegiato
+	docker exec -it -u browser $(CONTAINER_NAME) bash
+
+shell-root: ## Apre una shell come root (solo per debug)
 	docker exec -it $(CONTAINER_NAME) bash
 
 hosts-check: ## Mostra /etc/hosts dentro il container
@@ -74,5 +81,5 @@ vnc: ## Apre un client VNC (vncviewer o remmina) su localhost
 	elif command -v remmina >/dev/null; then remmina -c vnc://localhost:$(VNC_PORT) & \
 	else echo "Nessun client VNC trovato: collegati a localhost:$(VNC_PORT)"; fi
 
-clean: ## Ferma il container e rimuove l'immagine locale
+clean: ## Ferma i container e rimuove le immagini locali
 	$(COMPOSE) down --rmi all

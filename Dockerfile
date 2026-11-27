@@ -40,6 +40,14 @@ RUN curl -fL -o /tmp/firefox.tar \
     rm /tmp/firefox.tar && \
     firefox --version
 
+# Enterprise policies: no password/form saving, extensions blocked, telemetry
+# off, Safe Browsing locked on, proxy locked to the system (env) settings.
+COPY firefox/policies.json /opt/firefox/distribution/policies.json
+
+# Unprivileged user that runs the whole desktop (Xvfb, openbox, Firefox, x11vnc).
+# The entrypoint starts as root only to edit /etc/hosts, then drops to this user.
+RUN useradd --uid 1000 --create-home --shell /bin/bash browser
+
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

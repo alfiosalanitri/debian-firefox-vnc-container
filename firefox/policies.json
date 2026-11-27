@@ -1,0 +1,39 @@
+{
+  "policies": {
+    "DisableTelemetry": true,
+    "DisableFirefoxStudies": true,
+    "DisableFirefoxAccounts": true,
+    "DisableAppUpdate": true,
+    "DontCheckDefaultBrowser": true,
+    "OverrideFirstRunPage": "",
+    "OverridePostUpdatePage": "",
+    "NoDefaultBookmarks": true,
+
+    "PasswordManagerEnabled": false,
+    "OfferToSaveLogins": false,
+    "AutofillAddressEnabled": false,
+    "AutofillCreditCardEnabled": false,
+    "DisableFormHistory": true,
+
+    "ExtensionSettings": {
+      "*": { "installation_mode": "blocked" }
+    },
+
+    "Proxy": { "Mode": "system", "Locked": true },
+    "DNSOverHTTPS": { "Enabled": false, "Locked": true },
+
+    "EnableTrackingProtection": { "Value": true, "Cryptomining": true, "Fingerprinting": true },
+    "PopupBlocking": { "Default": true },
+    "PromptForDownloadLocation": false,
+
+    "Preferences": {
+      "browser.safebrowsing.malware.enabled": { "Value": true, "Status": "locked" },
+      "browser.safebrowsing.phishing.enabled": { "Value": true, "Status": "locked" },
+      "browser.safebrowsing.downloads.enabled": { "Value": true, "Status": "locked" },
+      "pdfjs.enableScripting": { "Value": false, "Status": "locked" },
+      "network.protocol-handler.external-default": { "Value": false, "Status": "locked" },
+      "media.peerconnection.enabled": { "Value": false, "Status": "locked" },
+      "browser.download.always_ask_before_handling_new_types": { "Value": true, "Status": "locked" }
+    }
+  }
+}

@@ -1,9 +1,19 @@
-# Debian + Firefox accessibile via VNC.
+# Debian + Firefox accessibile via VNC, isolato per aprire link sospetti.
+#
+#   host ──VNC 127.0.0.1:6000──▶ gateway ──▶ browser:5900
+#   browser ──http(s)──▶ gateway:3128 (squid) ──▶ Internet pubblico
+#                                  ✗ host, reti Docker, LAN, VPN
+#
+# Il browser sta SOLO sulla rete "sandbox" (internal: nessuna uscita): l'unica
+# via verso l'esterno è il proxy del gateway, che rifiuta le destinazioni
+# private. Il gateway inoltra anche la porta VNC, perché Docker non pubblica
+# porte di container che stanno solo su reti interne.
 #
 # Le voci custom di /etc/hosts arrivano dalla variabile CUSTOM_HOSTS (multilinea).
 # Compose non sa leggere un file dentro una variabile: usa `make up`, che la
 # popola dal file `my-hosts`, oppure:
 #   CUSTOM_HOSTS="$(cat my-hosts)" docker compose up -d
+# Gli IP elencati lì sono considerati fidati e restano raggiungibili anche se privati.
 #
 # ATTENZIONE: il VNC è senza password. Di default la porta è esposta solo su
 # 127.0.0.1; imposta VNC_BIND=0.0.0.0 solo su reti fidate.
@@ -18,8 +28,70 @@ services:
     image: ${IMAGE:-debian-browser-app}
     container_name: ${CONTAINER_NAME:-debian-browser}
     shm_size: "2gb"
-    ports:
-      - "${VNC_BIND:-127.0.0.1}:${VNC_PORT:-6000}:5900"
     environment:
       CUSTOM_HOSTS: ${CUSTOM_HOSTS:-}
+      # Firefox usa il proxy di sistema (bloccato dalle policy) = queste variabili
+      http_proxy: http://gateway:3128
+      https_proxy: http://gateway:3128
+      no_proxy: localhost,127.0.0.1
+    networks:
+      - sandbox
+    depends_on:
+      - gateway
     restart: "no"
+
+    # --- Isolation / hardening -------------------------------------------
+    # The entrypoint starts as root only to edit /etc/hosts, then drops to the
+    # unprivileged "browser" user (uid 1000) via setpriv. SETUID/SETGID are
+    # the only capabilities kept, and only for that drop: after it, no process
+    # has any capability, and no-new-privileges blocks re-gaining them
+    # (setuid binaries, file capabilities).
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+    # Immutable image filesystem; everything writable lives in RAM and is
+    # thrown away when the container stops (no persistence between sessions).
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+      - /home/browser:uid=1000,gid=1000,mode=0700,size=1g
+    # Resource limits: a malicious page cannot starve the host.
+    mem_limit: ${MEM_LIMIT:-4g}
+    cpus: ${CPUS:-2}
+    pids_limit: ${PIDS_LIMIT:-1024}
+
+  gateway:
+    build:
+      context: ./gateway
+    image: ${GATEWAY_IMAGE:-debian-browser-gateway}
+    container_name: ${CONTAINER_NAME:-debian-browser}-gateway
+    environment:
+      CUSTOM_HOSTS: ${CUSTOM_HOSTS:-}
+    ports:
+      - "${VNC_BIND:-127.0.0.1}:${VNC_PORT:-6000}:5900"
+    networks:
+      - sandbox
+      - egress
+    restart: "no"
+    # Runs as the unprivileged "proxy" user, needs no capability at all
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+    mem_limit: 256m
+    cpus: 1
+    pids_limit: 256
+
+networks:
+  # No route outside: the browser can only talk to the gateway
+  sandbox:
+    internal: true
+  # Internet access, used only by the gateway
+  egress: {}
